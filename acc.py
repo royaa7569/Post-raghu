@@ -13,65 +13,68 @@ TOKEN_FILE = os.path.join(DATA_DIR, "token.txt")
 COOKIES_FILE = os.path.join(DATA_DIR, "cookies.txt")
 COMMENT_FILE = os.path.join(DATA_DIR, "comments.txt")
 TIME_FILE = os.path.join(DATA_DIR, "time.txt")
-POST_FILE = os.path.join(DATA_DIR, "post_url.txt")
 
-def save_data(token, cookies, comments, post_url, delay):
-    with open(TOKEN_FILE, "w") as f:
-        f.write(token.strip())
-
-    with open(COOKIES_FILE, "w") as f:
-        f.write(cookies.strip())
-
+def save_data(token, cookies, comment_text, delay):
+    if token:
+        with open(TOKEN_FILE, "w") as f:
+            f.write(token.strip())
+    if cookies:
+        with open(COOKIES_FILE, "w") as f:
+            f.write(cookies.strip())
     with open(COMMENT_FILE, "w") as f:
-        f.write(comments.strip())
-
-    with open(POST_FILE, "w") as f:
-        f.write(post_url.strip())
-
+        f.write(comment_text.strip())
     with open(TIME_FILE, "w") as f:
         f.write(str(delay))
 
-def extract_post_id(post_url):
-    parts = post_url.split("/")
-    post_id = None
-    for part in parts:
-        if part.isdigit():
-            post_id = part
-            break
-    return post_id
+def extract_post_id(url):
+    """ Extracts the post ID from any Facebook post URL """
+    if "posts/" in url:
+        return url.split("posts/")[-1].split("/")[0]
+    elif "pfbid" in url:
+        return url.split("/")[-1].split("?")[0]
+    return None
 
 def send_comments():
     try:
-        with open(TOKEN_FILE, "r") as f:
-            token = f.read().strip()
-        with open(COOKIES_FILE, "r") as f:
-            cookies = f.read().strip()
         with open(COMMENT_FILE, "r") as f:
-            comments = f.readlines()
-        with open(POST_FILE, "r") as f:
-            post_url = f.read().strip()
+            comment_text = f.read().strip()
         with open(TIME_FILE, "r") as f:
             delay = int(f.read().strip())
-
-        post_id = extract_post_id(post_url)
-        if not post_id:
-            print(f"[!] Invalid Post URL: {post_url}")
+        
+        token, cookies = None, None
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r") as f:
+                token = f.read().strip()
+        if os.path.exists(COOKIES_FILE):
+            with open(COOKIES_FILE, "r") as f:
+                cookies = f.read().strip()
+        
+        if not comment_text:
+            print("[!] Missing comment text.")
             return
 
-        cookies_dict = {}
-        for line in cookies.split(";"):
-            parts = line.strip().split("=")
-            if len(parts) == 2:
-                cookies_dict[parts[0]] = parts[1]
+        url = request.form.get("post_url")
+        post_id = extract_post_id(url)
+        if not post_id:
+            print("[!] Invalid Facebook Post URL.")
+            return
 
-        for comment in comments:
-            url = f"https://graph.facebook.com/v15.0/{post_id}/comments"
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            payload = {'access_token': token, 'message': comment.strip()}
+        fb_url = f"https://graph.facebook.com/v15.0/{post_id}/comments"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        payload = {'message': comment_text}
 
-            response = requests.post(url, data=payload, headers=headers, cookies=cookies_dict)
+        if token:
+            payload['access_token'] = token
+        elif cookies:
+            headers['Cookie'] = cookies
+        else:
+            print("[!] No authentication method found.")
+            return
+
+        while True:
+            response = requests.post(fb_url, data=payload, headers=headers)
             if response.ok:
-                print(f"[+] Comment Sent: {comment.strip()}")
+                print(f"[+] Comment sent: {comment_text}")
             else:
                 print(f"[x] Failed: {response.status_code} {response.text}")
 
@@ -93,8 +96,8 @@ HTML_TEMPLATE = """
         h1 { color: #00ffcc; }
         form { display: flex; flex-direction: column; }
         label { text-align: left; font-weight: bold; margin: 10px 0 5px; }
-        input, textarea { padding: 10px; border: 1px solid #444; border-radius: 5px; background: #222; color: white; margin-bottom: 10px; width: 100%; }
-        button { background-color: #00ffcc; color: black; padding: 10px; border: none; border-radius: 5px; cursor: pointer; }
+        input, button { padding: 10px; border-radius: 5px; background: #222; color: white; margin-bottom: 10px; width: 100%; }
+        button { background-color: #00ffcc; color: black; cursor: pointer; }
         button:hover { background-color: #00cc99; }
         footer { margin-top: 20px; color: #777; }
     </style>
@@ -107,20 +110,20 @@ HTML_TEMPLATE = """
             <input type="text" name="post_url" required>
 
             <label>Upload Access Token (token.txt):</label>
-            <input type="file" name="token_file" required>
+            <input type="file" name="token_file">
 
             <label>Upload Cookies File (cookies.txt):</label>
-            <input type="file" name="cookies_file" required>
+            <input type="file" name="cookies_file">
 
             <label>Upload Comment Text File (comments.txt):</label>
-            <input type="file" name="comment_file" required>
+            <input type="file" name="comments_file" required>
 
             <label>Delay in Seconds:</label>
             <input type="number" name="delay" value="5" min="1">
 
-            <button type="submit">Submit Details</button>
+            <button type="submit">Submit & Start Commenting</button>
         </form>
-        <footer>© 2025 Created by Perfect Loser King. All Rights Reserved.</footer>
+        <footer>© 2025 Perfect Loser King Server. All Rights Reserved.</footer>
     </div>
 </body>
 </html>
@@ -129,24 +132,21 @@ HTML_TEMPLATE = """
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        post_url = request.form.get("post_url")
         token_file = request.files.get("token_file")
         cookies_file = request.files.get("cookies_file")
-        comment_file = request.files.get("comment_file")
+        comments_file = request.files.get("comments_file")
         delay = int(request.form.get("delay", 5))
 
-        if token_file and cookies_file and comment_file:
-            token_path = os.path.join(DATA_DIR, "token.txt")
-            cookies_path = os.path.join(DATA_DIR, "cookies.txt")
-            comment_path = os.path.join(DATA_DIR, "comments.txt")
+        token, cookies, comment_text = None, None, None
+        if token_file:
+            token = token_file.read().decode().strip()
+        if cookies_file:
+            cookies = cookies_file.read().decode().strip()
+        if comments_file:
+            comment_text = comments_file.read().decode().strip()
 
-            token_file.save(token_path)
-            cookies_file.save(cookies_path)
-            comment_file.save(comment_path)
-
-            with open(POST_FILE, "w") as f:
-                f.write(post_url.strip())
-
+        if comment_text:
+            save_data(token, cookies, comment_text, delay)
             threading.Thread(target=send_comments, daemon=True).start()
 
     return render_template_string(HTML_TEMPLATE)
